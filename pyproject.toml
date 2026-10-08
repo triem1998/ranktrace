@@ -1,0 +1,25 @@
+[project]
+name = "ranktrace"
+version = "0.1.0"
+description = "Per-rank PyTorch profiling and trace analysis for distributed training on NVIDIA and AMD GPUs."
+readme = "README.md"
+authors = [{ name = "PHAN Triem", email = "triemphandinh@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "traceinsight @ git+https://github.com/facebookresearch/HolisticTraceAnalysis.git@8fb6d9509318216ded4247f034c97c812bafae50",  # HTA, tested commit; PyPI 0.5.0 breaks on pandas 3
+    "TraceLens @ git+https://github.com/AMD-AGI/TraceLens.git@96bbb8c4d99fc0d9fabfad65461d67874cbf4639",  # tested commit
+    "pandas",
+    "plotly",
+    "pyarrow",  # nsys recipe tables (.parquet)
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
