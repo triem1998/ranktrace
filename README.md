@@ -30,7 +30,8 @@ with make_profiler("torch", trace_dir="traces", wait=5, warmup=1, active=2) as p
   per rank), `"nvtx"` (`NvtxProfiler`, one `step` NVTX range per recorded batch, for nsys).
 - `wait`, `warmup`, `active`: as in `torch.profiler.schedule`. With gradient accumulation over A
   batches, make `wait + warmup + active` a multiple of A so the last recorded batch has the
-  gradient all-reduce and the optimizer step.
+  gradient all-reduce and the optimizer step. On AMD (ROCm) the warmup steps are skipped instead of
+  profiled: torch.profiler's warmup loses all GPU kernels there.
 - `region(name)`: optional section (e.g. forward, backward). torch traces already label the step,
   the DataLoader and the optimizer. Inside a region autograd runs on the calling thread.
 - `record_shapes=True`: torch mode only.

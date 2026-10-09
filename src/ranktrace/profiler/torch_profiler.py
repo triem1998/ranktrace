@@ -29,9 +29,12 @@ class TorchProfiler(Profiler):
         acts = [torch.profiler.ProfilerActivity.CPU]
         if torch.cuda.is_available():
             acts.append(torch.profiler.ProfilerActivity.CUDA)
+        # ROCm: the warmup phase loses all GPU kernels (MI300A, ROCm 10 dev), so skip those steps instead;
+        # the recorded steps stay the same
+        wait, warmup = (self.wait + self.warmup, 0) if torch.version.hip else (self.wait, self.warmup)
         self._prof = torch.profiler.profile(
             activities=acts,
-            schedule=torch.profiler.schedule(wait=self.wait, warmup=self.warmup, active=self.active, repeat=1),
+            schedule=torch.profiler.schedule(wait=wait, warmup=warmup, active=self.active, repeat=1),
             on_trace_ready=self._save,
             record_shapes=record_shapes,
         )
