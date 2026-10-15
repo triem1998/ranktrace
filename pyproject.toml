@@ -11,6 +11,7 @@ dependencies = [
     "TraceLens @ git+https://github.com/AMD-AGI/TraceLens.git@96bbb8c4d99fc0d9fabfad65461d67874cbf4639",  # tested commit
     "pandas",
     "plotly",
+    "psutil",  # stats: CPU / RAM / data read over time
     "pyarrow",  # nsys recipe tables (.parquet)
 ]
 

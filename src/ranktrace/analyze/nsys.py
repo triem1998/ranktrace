@@ -18,7 +18,8 @@ NSYS_RECIPES = [
     ("04", "cuda_gpu_kern_sum", [], "rank_stats",  # the 10 kernels with the most total time
      lambda d: px.bar(d[d.Name.isin(d.groupby("Name").Sum.sum().nlargest(10).index)], x="Name", y="Sum",
                       color="Rank", barmode="group", labels={"Sum": "ns"})),
-    ("05", "nccl_gpu_overlap_trace", [], "rank_trace", lambda d: px.box(d, x="Rank", y="Compute Overlap")),
+    ("05", "nccl_gpu_overlap_trace", [], "rank_trace",  # table has every kernel; NCCL ones by the recipe's 'nccl' prefix
+     lambda d: px.box(d[d.Name.str.startswith("nccl")], x="Rank", y="Compute Overlap")),
     ("07", "cuda_api_sync", [], "analysis", None),  # each CPU wait for the GPU: table only
     ("08", "cuda_gpu_mem_time_sum", [], "rank_stats",
      lambda d: px.bar(d, x="Name", y="Sum", color="Rank", barmode="group", labels={"Sum": "ns"})),

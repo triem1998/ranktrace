@@ -18,17 +18,18 @@ def _sections(a, out: Path) -> pd.DataFrame:
     return d
 
 
-# (output name, HTA call returning the table, HTA figures kept: 1 = the summary one, None = all)
+# (output name, HTA call returning the table, save HTA's first figure, the summary one).
+# Not used: get_potential_stragglers (keeps only `ncclKernel*` names, but recent NCCL names them
+# `ncclDevKernel*`, and only kernels longer than 1% of a step: always empty here; TraceLens 06 instead)
+# and get_time_spent_blocked_on_full_queue (fixed 1024 limit, the counted queue tops out just below it)
 HTA_ANALYSES = [
-    ("01_sections", lambda a, r, o: _sections(a, o), 0),
-    ("02_temporal", lambda a, r, o: a.get_temporal_breakdown(visualize=True), 1),
-    ("03_idle", lambda a, r, o: a.get_idle_time_breakdown(visualize=True)[0], 1),
-    ("04_kernel_types", lambda a, r, o: a.get_gpu_kernel_breakdown(visualize=True)[0], 1),
-    ("05_comm_overlap", lambda a, r, o: a.get_comm_comp_overlap(visualize=True), 1),
-    ("06_stragglers", lambda a, r, o: a.get_potential_stragglers(num_candidates=1, visualize=True), None),
-    ("07_queue_length", lambda a, r, o: a.get_queue_length_summary(ranks=r), 0),
-    ("07b_full_queue", lambda a, r, o: a.get_time_spent_blocked_on_full_queue(a.get_queue_length_time_series(ranks=r)), 0),
-    ("08_memory_bw", lambda a, r, o: a.get_memory_bw_summary(), 0),
+    ("01_sections", lambda a, r, o: _sections(a, o), False),
+    ("02_temporal", lambda a, r, o: a.get_temporal_breakdown(visualize=True), True),
+    ("03_idle", lambda a, r, o: a.get_idle_time_breakdown(visualize=True)[0], True),
+    ("04_kernel_types", lambda a, r, o: a.get_gpu_kernel_breakdown(visualize=True)[0], True),
+    ("05_comm_overlap", lambda a, r, o: a.get_comm_comp_overlap(visualize=True), True),
+    ("07_queue_length", lambda a, r, o: a.get_queue_length_summary(ranks=r), False),
+    ("08_memory_bw", lambda a, r, o: a.get_memory_bw_summary(), False),
 ]
 
 
@@ -38,7 +39,7 @@ def run_hta(trace_dir: Path, out: Path, ranks: list[int]) -> None:
     # HTA calls fig.show() and does not return the figure: collect it instead
     plotly.basedatatypes.BaseFigure.show = lambda fig, *a, **k: figs.append(fig)
     a = TraceAnalysis(trace_dir=str(trace_dir))
-    for name, call, keep in HTA_ANALYSES:
+    for name, call, save_fig in HTA_ANALYSES:
         figs.clear()
         try:
             r = call(a, ranks, out)
@@ -48,7 +49,6 @@ def run_hta(trace_dir: Path, out: Path, ranks: list[int]) -> None:
         # HTA returns a DataFrame, a {rank: DataFrame} dict, a list or a Series
         df = pd.concat(r, names=["rank"]) if isinstance(r, dict) else pd.DataFrame(r)
         df.to_csv(out / f"{name}.csv")
-        kept = figs[:keep] if keep is not None else figs
-        for i, fig in enumerate(kept):
-            fig.write_html(out / f"{name}{'' if len(kept) == 1 else f'_{i}'}.html", include_plotlyjs="directory")
+        if save_fig and figs:
+            figs[0].write_html(out / f"{name}.html", include_plotlyjs="directory")
     print(f"HTA results in {out}")

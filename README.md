@@ -30,15 +30,21 @@ with make_profiler("torch", trace_dir="traces", wait=5, warmup=1, active=2) as p
   per rank), `"nvtx"` (`NvtxProfiler`, one `step` NVTX range per recorded batch, for nsys).
 - `wait`, `warmup`, `active`: as in `torch.profiler.schedule`. With gradient accumulation over A
   batches, make `wait + warmup + active` a multiple of A so the last recorded batch has the
-  gradient all-reduce and the optimizer step. On AMD (ROCm) the warmup steps are skipped instead of
-  profiled: torch.profiler's warmup loses all GPU kernels there.
+  gradient all-reduce and the optimizer step.
 - `region(name)`: optional section (e.g. forward, backward). torch traces already label the step,
   the DataLoader and the optimizer. Inside a region autograd runs on the calling thread.
 - `record_shapes=True`: torch mode only.
-- `analyze=True` (default, torch mode only): at the end of the run, rank 0 runs HTA and TraceLens
-  on all ranks' traces and prints the time of each. Meanwhile the job keeps its GPUs, and HTA needs
-  about 5x the total trace size in RAM; for large runs set `analyze=False` and analyze later.
-- `stats=True`: writes `stats/rank{r}.json` (step times, peak GPU / host memory, trace size).
+- `stats=True`: writes `stats/rank{r}.json`: step times, peak GPU / host memory, trace size, and
+  every second the CPU, RAM and data read of the process and its DataLoader workers, plus its GPU
+  memory. Costs under 1% of the step time.
+- `memory=True` (off by default): records every GPU allocation of the last recorded step, with the
+  line of code behind it. Writes `stats/memory_rank{r}.html` (PyTorch's memory viewer; open it in a
+  browser, it loads its display code from the internet) and `stats/memory_rank{r}.csv`. Slows that
+  step by a few %; the files grow with the number of allocations (6 MB for 26k).
+- `analyze=True` (default): at the end of the run, rank 0 analyzes all ranks' outputs and prints
+  the time of each tool: `stats` (if `stats` or `memory`), plus HTA and TraceLens in torch mode. The
+  other ranks wait for it. Meanwhile the job keeps its GPUs, and HTA needs about 5x the total trace
+  size in RAM; for large runs set `analyze=False` and analyze later.
 
 `nvtx` mode runs under nsys. `--capture-range-end=stop` is required: the default
 (`stop-shutdown`) kills the application when the capture ends.
@@ -49,33 +55,41 @@ nsys profile -t cuda,nvtx --capture-range=cudaProfilerApi --capture-range-end=st
 
 ## Analyze
 
-In torch mode HTA and TraceLens run automatically (`analyze=True`). By hand:
+`stats` runs automatically in every mode, HTA and TraceLens in torch mode (`analyze=True`). By hand:
 
 ```
 python -m ranktrace.analyze traces --tool hta        # torch traces
 python -m ranktrace.analyze traces --tool tracelens  # torch traces
 python -m ranktrace.analyze traces --tool nsys       # rank*.nsys-rep
-python -m ranktrace.analyze traces --tool stats      # stats/rank*.json
+python -m ranktrace.analyze traces --tool stats      # stats/ (any mode)
 ```
 
 Results go to `traces/analysis/<tool>/` as CSV tables and HTML figures (TraceLens figures in
-`figures/`). HTA figures are HTA's own; the other figures are drawn by ranktrace from the tools'
+`figures/`). HTA figures and `memory_rank{r}.html` are the tools' own; the other figures are drawn by ranktrace from the tools'
 tables, and their titles say so. Outputs answering the same question have the same number in every
 tool.
 
-| # | Question | HTA | TraceLens | nsys |
-|---|---|---|---|---|
-| 01 | Time per step, DataLoader wait | `01_sections` | | `01_nvtx_gpu_proj_sum` |
-| 02 | GPU busy or idle | `02_temporal` | `02_gpu_timeline` (also exposed comm and copies) | `02_gpu_time_util` |
-| 03 | Why idle / when idle | `03_idle` | | `03_gpu_gaps` |
-| 04 | What GPU work, which kernels | `04_kernel_types` | `04_ops_by_category` | `04_cuda_gpu_kern_sum` |
-| 05 | Communication hidden by compute * | `05_comm_overlap` | in `02_gpu_timeline` | `05_nccl_gpu_overlap_trace` |
-| 06 | Which rank is slow * | `06_stragglers` | `06_stragglers` | |
-| 07 | CPU-bound or GPU-bound | `07_queue_length`, `07b_full_queue` (tables) | | `07_cuda_api_sync` (table) |
-| 08 | Copies | `08_memory_bw` (table) | in `02_gpu_timeline` | `08_cuda_gpu_mem_time_sum` |
-| 09 | Collectives: transfer or wait * | | `09_collectives` | `09_nccl_sum` |
+| # | Question | HTA | TraceLens | nsys | stats |
+|---|---|---|---|---|---|
+| 01 | Time per step, DataLoader wait | `01_sections` | | `01_nvtx_gpu_proj_sum` | `summary` (step times) |
+| 02 | GPU busy or idle | `02_temporal` | `02_gpu_timeline` (also exposed comm and copies) | `02_gpu_time_util` | |
+| 03 | Why idle / when idle | `03_idle` | | `03_gpu_gaps` | |
+| 04 | What GPU work, which kernels | `04_kernel_types` | `04_ops_by_category` | `04_cuda_gpu_kern_sum` | |
+| 05 | Communication hidden by compute * | `05_comm_overlap` | in `02_gpu_timeline` | `05_nccl_gpu_overlap_trace` | |
+| 06 | Which rank is slow * | | `06_stragglers` | | |
+| 07 | CPU-bound or GPU-bound | `07_queue_length` (table) | | `07_cuda_api_sync` (table) | |
+| 08 | Copies | `08_memory_bw` (table) | in `02_gpu_timeline` | `08_cuda_gpu_mem_time_sum` | |
+| 09 | Collectives: transfer or wait * | | `09_collectives` | `09_nccl_sum` | |
+| 10 | Data wait: CPU, disk or RAM | | | | `10_system` |
+| 11 | What fills the GPU memory | | | | `11_memory`, `11_memory_peak` ** |
 
 \* needs at least 2 ranks with NCCL; on 1 GPU these outputs are not written.
+\** `11_memory_peak` needs `memory=True`.
+
+Two HTA analyses are left out. Stragglers (`get_potential_stragglers`) only looks at kernels named
+`ncclKernel*` (recent NCCL names them `ncclDevKernel*`) that last over 1% of a step, so it finds
+nothing. Time blocked on a full queue (`get_time_spent_blocked_on_full_queue`) counts the queue as
+full at exactly 1024 operations, which the counted queue does not reach.
 
 ## Reading the results
 
@@ -128,17 +142,20 @@ Words used below:
 - TraceLens: `exposed_comm_time` in `02_gpu_timeline`.
 
 **06: Which rank is slow?** *
-- HTA `06_stragglers`: how often each rank started its collectives last. The slow rank has the
-  highest count.
-- TraceLens `06_stragglers`: per rank, `total_wait_time_us` (time spent waiting for the others) and
-  `pct_arrived_last` (on the bar). The slow rank waits the least and arrives last most often; the
-  others wait for it. Then compare that rank's 01 and 04 with the others: more data wait, more
-  compute (bigger input) or a slower node.
+- TraceLens `06_stragglers`: per rank, `total_wait_time_us`: time spent waiting for the last rank
+  to start each collective. The slow rank waits the least: the others wait for it. `pct_arrived_last`
+  (on the bar) counts how often a rank started last, tiny collectives included, so it can point to
+  another rank; trust the wait time. Then compare that rank's 01 and 04 with the others: more data
+  wait, more compute (bigger input) or a slower node.
 
 **07: Is the CPU or the GPU the limit?**
-- HTA `07_queue_length`: number of operations the CPU has queued for the GPU and not yet run (max
-  1024). Near 0 = the GPU waits for the CPU (CPU-bound); high = the CPU is ahead (GPU-bound, normal).
-  `07b_full_queue`: share of time the queue was full and the CPU had to wait (GPU-bound).
+- HTA `07_queue_length`: per GPU stream (queue), the number of operations the CPU has sent and the
+  GPU has not started yet (at most about 1024). Look at the stream with the most operations (`count`,
+  the compute stream) and its median (`50%`): near 0 = the GPU runs each operation as soon as it
+  arrives and waits for the CPU (CPU-bound, worth fixing); near 1000 = the CPU is far ahead (GPU-bound,
+  normal). A low `25%` with a high median means the queue empties at times, e.g. while waiting for
+  data (see 01 and 03). The percentiles count queue changes, not time. Rank 0 only by default
+  (`--ranks` to change).
 - nsys `07_cuda_api_sync`: every CPU call that blocks until the GPU finishes
   (`cudaStreamSynchronize`, ...), with its duration. Often caused by `.item()`, `.cpu()` or printing a
   tensor. In a GPU-bound run long waits are normal; many of them stop the CPU from queueing ahead.
@@ -150,12 +167,33 @@ Words used below:
   `.to(device, non_blocking=True)`. Large D2D: often extra copies (`.contiguous()`, `torch.cat`).
 
 **09: Do collectives take long because of the transfer, or because ranks wait?** *
-- TraceLens `09_collectives`: per collective, `comm_latency_mean` (the transfer itself) and
-  `skew in start time_mean` (how long the first rank waits for the last). Large skew = load imbalance
-  (see 06); large latency = network or message size.
+- TraceLens `09_collectives`: per collective type and size (e.g. `allreduce Float 2048 MB`),
+  total time over the recorded steps of `transfer` (the exchange itself) and `wait for the last rank`
+  (how long the first rank waits for the last one to start). Most costly first. Large wait = load
+  imbalance (see 06); large transfer = network or message size.
 - nsys `09_nccl_sum`: total time per collective type, per rank (transfer and wait together).
 
-**stats** (`--tool stats`, from `stats=True`): per rank, median step time, peak GPU memory
-(`gpu_alloc_peak_gb` = PyTorch tensors, `gpu_device_peak_gb` = the whole GPU), peak CPU memory
+**10: When the GPU waits for data, is it the CPU, the disk or the RAM?**
+- stats `10_system`: rank 0 (others with `--ranks`), every second, CPU % (100 = one core), RAM and
+  data read (MB/s); `training loop` = the training process (loop, metrics, saving), `DataLoader
+  workers` = its child processes (also torch.compile workers while compiling). Dotted lines = end
+  of each step, shaded = recorded steps. During a data wait (see 01): workers near 100% x number of
+  workers = the preprocessing is the limit (more workers, lighter preprocessing); workers low and
+  high MB/s = the reading is the limit; both low = waiting on storage (cache the data in RAM). RAM
+  rising every epoch = data piling up. Data read counts `read()` calls, not memory-mapped files.
+  With a profiler running the CPU is a little higher than without.
+
+**11: What fills the GPU memory, and when?**
+- stats `11_memory`: GPU memory allocated by PyTorch over time (ranks 0 and 1, others with
+  `--ranks`), once per second (short peaks are missed: the true peak is `gpu_alloc_peak_gb` in `summary`).
+- stats `11_memory_peak` (`memory=True`): at the peak of the last recorded step, the memory held per
+  line of your code (top 10), e.g. a model's `forward` = activations kept for backward; `before
+  recording` = what was already allocated (weights, optimizer state, data); `torch internals` = no
+  line of your code (e.g. gradients made by backward).
+- `stats/memory_rank{r}.html` (`memory=True`): PyTorch's viewer, every allocation over time; click
+  one to see its call stack.
+
+**stats** (`summary`): per rank, median step time, peak GPU memory (`gpu_alloc_peak_gb` = PyTorch
+tensors, `gpu_device_peak_gb` = the whole GPU), peak CPU memory of the main process
 (`host_rss_peak_gb`) and trace size. A GPU peak close to the GPU size means a risk of
 out-of-memory.

@@ -6,11 +6,11 @@ import torch
 from ranktrace import make_profiler
 
 
-def _run(p, n=6):
+def _run(p, n=6, device="cpu"):
     with p:
         for _ in range(n):
             with p.region("my_region"):
-                torch.randn(64, 64) @ torch.randn(64, 64)
+                torch.randn(64, 64, device=device) @ torch.randn(64, 64, device=device)
             p.step()
 
 
@@ -31,6 +31,21 @@ def test_stats(tmp_path):
     s = json.loads((tmp_path / "stats" / "rank0.json").read_text())
     assert s["steps"] == 6 and len(s["step_s"]) == 5 and s["active_steps"] == [3, 4]
     assert s["trace_gb"] > 0 and s["host_rss_peak_gb"] > 0
+    assert len(s["step_t"]) == 6 and len(s["system"]["t"]) >= 2  # sampled at start and end
+
+
+def test_stats_analyzed_in_every_mode(tmp_path):
+    _run(make_profiler(None, trace_dir=tmp_path, wait=1, active=2, stats=True))
+    out = tmp_path / "analysis" / "stats"
+    assert (out / "10_system.html").exists() and (out / "summary.csv").exists()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_memory(tmp_path):
+    _run(make_profiler(None, trace_dir=tmp_path, wait=1, active=2, stats=True, memory=True), device="cuda")
+    assert {f.name for f in (tmp_path / "stats").glob("memory_rank0.*")} == {"memory_rank0.csv", "memory_rank0.html"}
+    out = tmp_path / "analysis" / "stats"
+    assert (out / "11_memory.html").exists() and "test_ranktrace.py" in (out / "11_memory_peak.csv").read_text()
 
 
 def test_bad_mode():

@@ -45,9 +45,13 @@ def plot_tracelens(out: Path) -> None:
         save(px.bar(cat, x="op category", y="total_direct_kernel_time_ms", color="rank", barmode="group"),
              "04_ops_by_category", "ops_summary_by_category.csv")
     if (f := out / "collectives" / "nccl_summary_implicit_sync.csv").exists():
-        c = pd.read_csv(f)  # comm_latency = transfer, skew in start time = wait for the latest rank (us)
-        save(px.bar(c, x="Collective name", y=["comm_latency_mean", "skew in start time_mean"], barmode="group",
-                    labels={"value": "us"}), "09_collectives", f.name)
+        c = pd.read_csv(f)  # one row per collective type and size; times in us
+        c["collective"] = c["Collective name"] + " " + c.dtype + " " + c["Full msg size (MB)"].map("{:.4g} MB".format)
+        c["transfer"] = c.comm_latency_mean * c["count"] / 1e3  # totals in ms, so costly collectives stand out
+        c["wait for the last rank"] = c["skew in start time_mean"] * c["count"] / 1e3
+        c = c.loc[(c.transfer + c["wait for the last rank"]).sort_values(ascending=False).index]
+        save(px.bar(c, x="collective", y=["transfer", "wait for the last rank"], barmode="group",
+                    labels={"value": "total ms"}), "09_collectives", f.name)
     if (f := out / "collectives" / "straggler_summary.csv").exists():
-        s = pd.read_csv(f).astype({"rank": str})  # slow rank: least wait, highest pct_arrived_last
+        s = pd.read_csv(f).astype({"rank": str})  # slow rank: least wait (the others wait for it)
         save(px.bar(s, x="rank", y="total_wait_time_us", text="pct_arrived_last"), "06_stragglers", f.name)
